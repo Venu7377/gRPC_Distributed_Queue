@@ -26,7 +26,9 @@ func main() {
 	}
 	defer conn.Close()
 	grpcClient = pb.NewTaskCoordinatorClient(conn)
-
+	if grpcClient == nil {
+		log.Fatalf("grpcClient is nil")
+	}
 	taskCount := 1000 // Number of tasks to simulate and submit
 	for range taskCount {
 		// Submit tasks to the coordinator
