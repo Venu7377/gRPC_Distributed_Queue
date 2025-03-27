@@ -1,0 +1,37 @@
+syntax = "proto3";
+package queue;
+option go_package = "./proto";
+
+service TaskCoordinator {
+  // Client submits a task to the coordinator
+  rpc SubmitTask (TaskRequest) returns (TaskResponse);
+
+  // Workers register and receive tasks via a stream(bidi)
+  rpc RegisterWorker (stream WorkerStatus) returns (stream TaskRequest);
+
+  // Worker reports task completion
+  rpc TaskCompleted (TaskCompletion) returns (TaskResponse);
+}
+
+message TaskRequest {
+  string task_id = 1;
+  int32 num1 = 2;
+  int32 num2 = 3;
+}
+
+message TaskResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message WorkerStatus {
+  string worker_id = 1;
+  bool available = 2;
+}
+
+message TaskCompletion {
+  string task_id = 1;
+  bool success = 2;
+  string worker_id = 3;
+  int32 result = 4;
+}
