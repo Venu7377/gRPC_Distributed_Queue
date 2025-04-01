@@ -54,14 +54,6 @@ func removeWorker(workers []string, workerID string) []string {
 }
 
 func (s *coordinatorServer) SubmitTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskResponse, error) {
-	// Check if task is already in the queue
-	exists, err := s.redisClient.LPos(ctx, "taskQueue", req.TaskId, redis.LPosArgs{}).Result()
-	if err != nil && err != redis.Nil {
-		return nil, err
-	}
-	if exists != 0 {
-		return &pb.TaskResponse{Success: false, Message: "Task already exists in the queue"}, nil
-	}
 	// Convert task to JSON for storing in Redis
 	taskJSON, err := json.Marshal(req)
 	if err != nil {
