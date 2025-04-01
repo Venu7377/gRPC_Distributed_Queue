@@ -107,9 +107,9 @@ func main() {
 
 func doSum(worker *Worker, task *pb.TaskRequest) int32 {
 	// just simulating long processing using sleep
-	// sleepTime := 10 * time.Second // 10s
-	// log.Printf("Worker %s will take %v to complete task %s", worker.id, sleepTime, task.TaskId)
-	// time.Sleep(sleepTime)
+	sleepTime := 10 * time.Second // 10s
+	log.Printf("Worker %s will take %v to complete task %s", worker.id, sleepTime, task.TaskId)
+	time.Sleep(sleepTime)
 	log.Printf("Worker %s processing task", worker.id)
 	return task.Num1 + task.Num2
 }

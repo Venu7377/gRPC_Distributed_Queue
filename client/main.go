@@ -29,7 +29,7 @@ func main() {
 	if grpcClient == nil {
 		log.Fatalf("grpcClient is nil")
 	}
-	taskCount := 1000 // Number of tasks to simulate and submit
+	taskCount := 15 // Number of tasks to simulate and submit
 	for range taskCount {
 		// Submit tasks to the coordinator
 		submitTaskHandler()

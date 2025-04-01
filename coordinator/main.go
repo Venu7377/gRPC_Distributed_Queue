@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net"
 	"sync"
@@ -9,20 +10,38 @@ import (
 
 	pb "grpc/proto"
 
+	"github.com/redis/go-redis/v9"
+
 	"slices"
 
 	"google.golang.org/grpc"
 )
 
+// Define a Redis client in the coordinatorServer struct
 type coordinatorServer struct {
 	pb.UnimplementedTaskCoordinatorServer
 	mu              sync.Mutex
-	workers         []string                        // List of worker IDs
-	workerChannels  map[string]chan *pb.TaskRequest // Map of worker channels
-	workerAvailable map[string]bool                 // Track worker availability
-	taskQueue       []*pb.TaskRequest               // In-memory task queue
-	lastWorkerIdx   int                             // Index to track round-robin distribution
-	cond            *sync.Cond                      // Condition variable to signal task/worker changes
+	workers         []string
+	workerChannels  map[string]chan *pb.TaskRequest
+	workerAvailable map[string]bool
+	redisClient     *redis.Client // Redis client for task queue to store tasks in Redis so tasks can be retained and continue processing in case of worker or coordinator server down
+	cond            *sync.Cond
+	lastWorkerIdx   int
+}
+
+// Initialize Redis client
+func newCoordinatorServer() *coordinatorServer {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379", // Redis server address
+		Password: "PaS5w0rD",
+	})
+
+	return &coordinatorServer{
+		workers:         []string{},
+		workerChannels:  make(map[string]chan *pb.TaskRequest),
+		workerAvailable: make(map[string]bool),
+		redisClient:     rdb,
+	}
 }
 
 func removeWorker(workers []string, workerID string) []string {
@@ -35,9 +54,25 @@ func removeWorker(workers []string, workerID string) []string {
 }
 
 func (s *coordinatorServer) SubmitTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskResponse, error) {
-	s.mu.Lock()
-	s.taskQueue = append(s.taskQueue, req)
-	s.mu.Unlock()
+	// Check if task is already in the queue
+	exists, err := s.redisClient.LPos(ctx, "taskQueue", req.TaskId, redis.LPosArgs{}).Result()
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	if exists != 0 {
+		return &pb.TaskResponse{Success: false, Message: "Task already exists in the queue"}, nil
+	}
+	// Convert task to JSON for storing in Redis
+	taskJSON, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store task in Redis list (LPUSH or RPUSH based on FIFO/LIFO preference)
+	err = s.redisClient.RPush(ctx, "taskQueue", taskJSON).Err()
+	if err != nil {
+		return nil, err
+	}
 
 	// Signal that a new task is available
 	s.cond.Broadcast()
@@ -115,10 +150,10 @@ func (s *coordinatorServer) TaskCompleted(ctx context.Context, req *pb.TaskCompl
 
 func (s *coordinatorServer) dispatchTasks() {
 	go func() {
+		ctx := context.Background()
 		for {
 			s.mu.Lock()
-			// wait until there are tasks and at least one worker is available
-			for len(s.taskQueue) == 0 || !s.hasAvailableWorker() {
+			for s.redisClient.LLen(ctx, "taskQueue").Val() == 0 || !s.hasAvailableWorker() {
 				s.cond.Wait()
 			}
 
@@ -126,26 +161,43 @@ func (s *coordinatorServer) dispatchTasks() {
 			workerID := s.getNextAvailableWorker()
 			if workerID == "" {
 				s.mu.Unlock()
-				continue // Continue if No available worker found
+				continue
 			}
 
-			// Get the next task from the queue
-			task := s.taskQueue[0]
-			s.taskQueue = s.taskQueue[1:] // Remove it from queue after getting
+			// Fetch the next task from Redis
+			taskJSON, err := s.redisClient.LPop(ctx, "taskQueue").Result()
+			if err != nil {
+				s.mu.Unlock()
+				log.Println("Error retrieving task from Redis:", err)
+				continue
+			}
+
+			// Convert JSON to TaskRequest
+			var task pb.TaskRequest
+			if err := json.Unmarshal([]byte(taskJSON), &task); err != nil {
+				s.mu.Unlock()
+				log.Println("Error unmarshaling task:", err)
+				continue
+			}
 
 			// Send task to worker
 			taskChan := s.workerChannels[workerID]
-			s.workerAvailable[workerID] = false // Mark worker as busy
+			s.workerAvailable[workerID] = false
 			s.mu.Unlock()
 
 			select {
-			case taskChan <- task:
-				log.Printf("Dispatched task %s (Num1 : %d, Num2 : %d) to worker %s", task.TaskId, task.GetNum1(), task.GetNum2(), workerID)
+			case taskChan <- &task:
+				log.Printf("Dispatched task %s (Num1: %d, Num2: %d) to worker %s", task.TaskId, task.GetNum1(), task.GetNum2(), workerID)
 			default:
-				// Worker channel full, requeue task
+				// Worker channel full, requeue task in Redis
 				s.mu.Lock()
-				s.taskQueue = append(s.taskQueue, task)
-				s.workerAvailable[workerID] = true // Worker still available
+				requeueTask, _ := json.Marshal(&pb.TaskRequest{
+					TaskId: task.TaskId,
+					Num1:   task.Num1,
+					Num2:   task.Num2,
+				})
+				s.redisClient.RPush(ctx, "taskQueue", requeueTask)
+				s.workerAvailable[workerID] = true
 				s.mu.Unlock()
 				log.Printf("Worker %s channel full, task %s requeued", workerID, task.TaskId)
 			}
@@ -194,12 +246,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	server := &coordinatorServer{
-		workers:         []string{},
-		workerChannels:  make(map[string]chan *pb.TaskRequest),
-		workerAvailable: make(map[string]bool),
-		taskQueue:       []*pb.TaskRequest{},
-	}
+	server := newCoordinatorServer()
 	server.cond = sync.NewCond(&server.mu) // initialize condition variable
 
 	pb.RegisterTaskCoordinatorServer(grpcServer, server)
