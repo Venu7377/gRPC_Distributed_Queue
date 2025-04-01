@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -63,6 +64,7 @@ func (s *coordinatorServer) SubmitTask(ctx context.Context, req *pb.TaskRequest)
 	// Store task in Redis list (LPUSH or RPUSH based on FIFO/LIFO preference)
 	err = s.redisClient.RPush(ctx, "taskQueue", taskJSON).Err()
 	if err != nil {
+		fmt.Println("Error pushing task to Redis:", err)
 		return nil, err
 	}
 
